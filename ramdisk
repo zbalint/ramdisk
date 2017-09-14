@@ -1,0 +1,253 @@
+#!/bin/bash
+#
+### BEGIN INIT INFO
+# Provides:          ramdisk
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Should-Start:      $network $time
+# Should-Stop:       $network $time
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start and stop the ramdisk sync daemon
+# Description:       Controls the ramdisk daemon "ramdisk"
+### END INIT INFO
+declare -r DEFAULT_USER="zbalint"
+declare -r BASE_DIR="/home/${DEFAULT_USER}/.ramdisk"
+declare -r TARGET_DIR="/dev/shm/ramdisk"
+declare -r BACKUP_DIR="${BASE_DIR}/backup"
+declare -r PIDFILE="${BASE_DIR}/pidfile"
+declare -r SYNC_FREQUENCY=1
+declare -r RUN_LOCK="${BASE_DIR}/.ramdisk.run"
+declare -r STOP_LOCK="${BASE_DIR}/.ramdisk.stop"
+
+declare -r CMD_START="start"
+declare -r CMD_SYNC="sync"
+declare -r CMD_STOP="stop"
+declare -r CMD_CHECK="check"
+declare -r CMD_STATUS="status"
+declare -r CMD_RELOAD="reload"
+declare -r CMD_RESTART="restart"
+declare -r CMD_CODE_INVALID=1
+declare -r CMD_CODE_START=2
+declare -r CMD_CODE_SYNC=3
+declare -r CMD_CODE_STOP=4
+declare -r CMD_CODE_CHECK=5
+declare -r CMD_CODE_RELOAD=6
+declare -r CMD_CODE_RESTART=7
+
+trap 'panic' ERR INT TERM
+trap 'intHandler' INT TERM
+trap 'shutdown' EXIT
+
+function intHandler() {
+  if checkService; then
+    kill -9 $(cat $PIDFILE)
+  fi
+  return 0
+}
+
+function shutdown() {
+  return 0
+}
+
+function panic() {
+  if checkService; then
+    kill -9 $(cat $PIDFILE)
+  fi
+  return 1
+}
+
+function log() {
+  printf "%s\n" "$*"
+}
+
+function lock() {
+  local cmd=$1
+
+  case "$cmd" in
+    create)
+    createLock $2
+      ;;
+    clear)
+    clearLock $2
+      ;;
+   esac
+}
+
+function createLock() {
+  local lockType="$1"
+  case "$lockType" in
+   run)
+   touch "$RUN_LOCK"
+   ;;
+   stop)
+   touch "$STOP_LOCK"
+   ;;
+  esac
+}
+
+function clearLock() {
+  local lockType="$1"
+  case "$lockType" in
+    run)
+    rm -f "$RUN_LOCK"
+    ;;
+    stop)
+    rm -f "$STOP_LOCK"
+    ;;
+  esac
+}
+
+function service() {
+  lock create run
+  sync $BACKUP_DIR $TARGET_DIR
+  while [[ ! -f "$STOP_LOCK" ]]; do
+    sleep $SYNC_FREQUENCY
+    sync $TARGET_DIR $BACKUP_DIR
+  done
+  lock clear run
+  lock clear stop
+  return 0
+}
+
+function start() {
+  log "Starting ramdisk service..."
+  if checkService; then
+    log "The ramdisk service already running."
+    return 1
+  else
+    service &
+    local result=$?
+    local pid=$!
+    echo $pid > ${BASE_DIR}/pidfile
+    if [[ $result == 0 ]]; then
+      log "Service successfully started with pid: $pid"
+    fi
+  fi
+}
+
+function sync() {
+  local from="$1"
+  local to="$2"
+  rsync -av --delete --recursive --force ${from}/ $to >/dev/null
+  # echo [`date +"%Y-%m-%d %H:%M"`] Ramdisk synced to Disk >> ${BASE_DIR}/ramdisk_sync.log
+  return 0
+}
+
+function restart() {
+  stop
+  sleep 3
+  start
+}
+
+function reload() {
+  restart
+}
+
+function stop() {
+  if [[ -f "$RUN_LOCK" ]]; then
+    log "Stopping ramdisk service..."
+    lock create stop
+  else
+    log "The ramdisk service already stopped."
+  fi
+}
+
+function checkService() {
+  if [ -f "$PIDFILE" ]; then
+    kill -0 $(cat $PIDFILE) 2&>/dev/null
+    local result=$?
+    if [[ $result == 0 ]]; then
+      return 0
+    else
+      return 2
+    fi
+  else
+    return 1
+  fi
+}
+
+function check() {
+  if [ -f "$PIDFILE" ]; then
+    kill -0 $(cat $PIDFILE) 2&>/dev/null
+    local result=$?
+    if [[ $result == 0 ]]; then
+      log "The ramdisk service is running with pid: $(cat $PIDFILE)"
+    else
+      log "The ramdisk service already stopped."
+    fi
+  else
+    log "The pidfile does not exists."
+  fi
+  return 0
+}
+
+function parse() {
+  local cmd="$1"
+  case "$cmd" in
+   $CMD_START)
+   return $CMD_CODE_START
+   ;;
+   $CMD_SYNC)
+   return $CMD_CODE_SYNC
+   ;;
+   $CMD_STOP)
+   return $CMD_CODE_STOP
+   ;;
+   $CMD_CHECK)
+   return $CMD_CODE_CHECK
+   ;;
+   $CMD_STATUS)
+   return $CMD_CODE_CHECK
+   ;;
+   $CMD_RELOAD)
+   return $CMD_CODE_RELOAD
+   ;;
+   $CMD_RESTART)
+   return $CMD_CODE_RESTART
+   ;;
+   *)
+   return 1
+   ;;
+  esac
+  return 0
+}
+
+function main() {
+  mkdir -p "${BASE_DIR}"
+  mkdir -p "${TARGET_DIR}"
+  mkdir -p "${BACKUP_DIR}"
+  parse $*
+  local cmd=$?
+
+  case "$cmd" in
+   $CMD_CODE_INVALID)
+   log "Usage: ramdisk {start|stop|reload|sync|check|status|restart}"
+   exit 1
+   ;;
+   $CMD_CODE_START)
+   start
+   ;;
+   $CMD_CODE_SYNC)
+   sync $TARGET_DIR $BACKUP_DIR
+   ;;
+   $CMD_CODE_STOP)
+   stop
+   ;;
+   $CMD_CODE_CHECK)
+   check
+   ;;
+   $CMD_CODE_RELOAD)
+   reload
+   ;;
+   $CMD_CODE_RESTART)
+   restart
+   ;;
+   *)
+   return 0
+   ;;
+  esac
+  return 0
+}
+
+main $*
