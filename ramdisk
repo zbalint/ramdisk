@@ -215,8 +215,11 @@ function parse() {
 
 function main() {
   mkdir -p "${BASE_DIR}"
+  chown -R $DEFAULT_USER:$DEFAULT_USER "${BASE_DIR}"
   mkdir -p "${TARGET_DIR}"
+  chown -R $DEFAULT_USER:$DEFAULT_USER "${TARGET_DIR}"
   mkdir -p "${BACKUP_DIR}"
+  chown -R $DEFAULT_USER:$DEFAULT_USER "${BACKUP_DIR}"
   parse $*
   local cmd=$?
 
